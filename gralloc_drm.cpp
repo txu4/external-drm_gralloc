@@ -37,13 +37,13 @@
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-static int32_t gralloc_drm_pid = 0;
-
 /*
  * Return the pid of the process.
  */
 static int gralloc_drm_get_pid(void)
 {
+	static int32_t gralloc_drm_pid = 0;
+
 	if (unlikely(!gralloc_drm_pid))
 		android_atomic_write((int32_t) getpid(), &gralloc_drm_pid);
 
@@ -161,7 +161,7 @@ static struct gralloc_drm_bo_t *validate_handle(buffer_handle_t _handle,
 
 	/* the buffer handle is passed to a new process */
 	ALOGE("data_owner=%d gralloc_pid=%d data=%p\n", handle->data_owner, gralloc_drm_get_pid(), handle->data);
-	if (unlikely(handle->data_owner != gralloc_drm_pid)) {
+	if (unlikely(handle->data_owner != gralloc_drm_get_pid())) {
 		struct gralloc_drm_bo_t *bo;
 
 		/* check only */
