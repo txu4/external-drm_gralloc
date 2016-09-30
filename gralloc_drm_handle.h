@@ -46,8 +46,9 @@ struct gralloc_drm_handle_t {
 	int height;
 	int format;
 	int usage;
-
-	int name;   /* the name of the bo */
+#ifdef USE_NAME
+        int name;   /* the name of the bo */
+#endif
 	int stride; /* the stride in bytes */
 
 	struct gralloc_drm_bo_t *data; /* pointer to struct gralloc_drm_bo_t */
@@ -57,7 +58,11 @@ struct gralloc_drm_handle_t {
 	int data_owner; /* owner of data (for validation) */
 };
 #define GRALLOC_DRM_HANDLE_MAGIC 0x12345678
+#ifdef USE_NAME
+ #define GRALLOC_DRM_HANDLE_NUM_FDS 0
+#else
 #define GRALLOC_DRM_HANDLE_NUM_FDS 1
+#endif
 #define GRALLOC_DRM_HANDLE_NUM_INTS (						\
 	((sizeof(struct gralloc_drm_handle_t) - sizeof(native_handle_t))/sizeof(int))	\
 	 - GRALLOC_DRM_HANDLE_NUM_FDS)

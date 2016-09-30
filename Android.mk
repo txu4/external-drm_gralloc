@@ -51,6 +51,10 @@ else
 DRM_USES_PIPE := false
 endif
 
+ifeq ($(ENABLE_FLINK_SUPPORT),1)
+LOCAL_CFLAGS += -DUSE_NAME
+endif
+
 ifneq ($(strip $(DRM_GPU_DRIVERS)),)
 
 LOCAL_PATH := $(call my-dir)
@@ -84,7 +88,8 @@ LOCAL_MODULE := libgralloc_drm
 LOCAL_MODULE_TAGS := optional
 
 LOCAL_SRC_FILES := \
-	gralloc_drm.cpp
+	gralloc_drm.cpp \
+	util.c
 
 LOCAL_C_INCLUDES := \
 	external/libdrm \

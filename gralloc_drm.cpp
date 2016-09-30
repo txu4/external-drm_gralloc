@@ -166,11 +166,14 @@ static struct gralloc_drm_bo_t *validate_handle(buffer_handle_t _handle,
 		/* check only */
 		if (!drm)
 			return NULL;
-
-		ALOGE("handle: name=%d pfd=%d\n", handle->name,
-			handle->prime_fd);
 		/* create the struct gralloc_drm_bo_t locally */
-		if (handle->name || handle->prime_fd >= 0)
+#ifdef USE_NAME
+		ALOGE("handle: name=%d \n", handle->name);
+		if (handle->name)
+#else
+		ALOGE("handle: pfd=%d\n", handle->prime_fd);
+		if (handle->prime_fd >= 0)
+#endif
 			bo = drm->drv->alloc(drm->drv, handle);
 		else /* an invalid handle */
 			bo = NULL;
@@ -288,6 +291,9 @@ static void gralloc_drm_bo_destroy(struct gralloc_drm_bo_t *bo)
 		handle->data = 0;
 	}
 	else {
+               if (handle->prime_fd >= 0)
+                       close(handle->prime_fd);
+
 		delete handle;
 	}
 }

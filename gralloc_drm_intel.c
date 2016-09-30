@@ -29,6 +29,7 @@
 
 #define LOG_TAG "GRALLOC-I915"
 
+# include <fcntl.h>
 #include <cutils/log.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -36,9 +37,11 @@
 #include <drm.h>
 #include <intel_bufmgr.h>
 #include <i915_drm.h>
+#include <drm_fourcc.h>
 
 #include "gralloc_drm.h"
 #include "gralloc_drm_priv.h"
+#include "util.h"
 
 #define MI_NOOP                     (0)
 #define MI_BATCH_BUFFER_END         (0x0a << 23)
@@ -51,6 +54,10 @@
 #define XY_SRC_COPY_BLT_WRITE_RGB   (1 << 20)
 #define XY_SRC_COPY_BLT_SRC_TILED   (1 << 15)
 #define XY_SRC_COPY_BLT_DST_TILED   (1 << 11)
+#define DRM_CLOEXEC O_CLOEXEC
+#ifndef DRM_RDWR
+#define DRM_RDWR O_RDWR
+#endif
 
 struct intel_info {
 	struct gralloc_drm_drv_t base;
@@ -192,6 +199,51 @@ batch_init(struct intel_info *info)
 	return ret;
 }
 
+static void calculate_aligned_geometry(uint32_t hal_format, int usage,
+		uint32_t *width,
+		uint32_t *height)
+{
+	uint32_t width_alignment = 1, height_alignment = 1, extra_height_div =1;
+	uint32_t fourcc_format = get_fourcc_format_for_hal_format(hal_format);
+	switch(fourcc_format) {
+	case DRM_FORMAT_YUV420:
+		width_alignment = 32;
+		height_alignment = 2;
+		extra_height_div = 2;
+		break;
+	case DRM_FORMAT_NV16:
+		width_alignment = 2;
+		extra_height_div = 1;
+		break;
+	case DRM_FORMAT_YUYV:
+		width_alignment = 2;
+		break;
+	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_NV12:
+		width_alignment = 2;
+		height_alignment = 2;
+		extra_height_div = 2;
+		break;
+	}
+
+	*width = ALIGN(*width, width_alignment);
+	*height = ALIGN(*height, height_alignment);
+
+	if (extra_height_div)
+		*height += *height / extra_height_div;
+
+	if (usage & GRALLOC_USAGE_HW_FB) {
+		*width = ALIGN(*width, 64);
+	} else if (usage & GRALLOC_USAGE_HW_TEXTURE) {
+		/* see 2D texture layout of DRI drivers */
+		*width = ALIGN(*width, 4);
+		*height = ALIGN(*height, 2);
+	}
+
+	if (fourcc_format == DRM_FORMAT_YUV420)
+		*width = ALIGN(*width, 128);
+}
+
 static void intel_resolve_format(struct gralloc_drm_drv_t *drv,
 		struct gralloc_drm_bo_t *bo,
 		uint32_t *pitches, uint32_t *offsets, uint32_t *handles)
@@ -244,7 +296,7 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 {
 	drm_intel_bo *ibo;
 	const char *name;
-	int aligned_width, aligned_height, bpp;
+	uint32_t aligned_width, aligned_height, bpp;
 	unsigned long flags;
 
 	flags = 0;
@@ -256,8 +308,7 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 
 	aligned_width = handle->width;
 	aligned_height = handle->height;
-	gralloc_drm_align_geometry(handle->format,
-			&aligned_width, &aligned_height);
+	calculate_aligned_geometry(handle->format, &aligned_width, &aligned_height);
 
 	if (handle->usage & GRALLOC_USAGE_HW_FB) {
 		unsigned long max_stride;
@@ -304,16 +355,6 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 		}
 	}
 	else {
-		if (handle->usage & (GRALLOC_USAGE_SW_READ_OFTEN |
-				     GRALLOC_USAGE_SW_WRITE_OFTEN))
-			*tiling = I915_TILING_NONE;
-		else if ((handle->usage & GRALLOC_USAGE_HW_RENDER) ||
-			 ((handle->usage & GRALLOC_USAGE_HW_TEXTURE) &&
-			  handle->width >= 64))
-			*tiling = I915_TILING_X;
-		else
-			*tiling = I915_TILING_NONE;
-
 		if (handle->usage & GRALLOC_USAGE_HW_TEXTURE) {
 			name = "gralloc-texture";
 			/* see 2D texture layout of DRI drivers */
@@ -322,6 +363,22 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 		}
 		else {
 			name = "gralloc-buffer";
+		}
+
+		if (get_fourcc_format_for_hal_format(handle->format) == DRM_FORMAT_YUV420) {
+			*tiling = I915_TILING_NONE;
+			aligned_width = ALIGN(aligned_width, 128);
+			name = "gralloc-videotexture";
+		} else {
+			if (handle->usage & (GRALLOC_USAGE_SW_READ_OFTEN |
+						GRALLOC_USAGE_SW_WRITE_OFTEN))
+				*tiling = I915_TILING_NONE;
+			else if ((handle->usage & GRALLOC_USAGE_HW_RENDER) ||
+				 ((handle->usage & GRALLOC_USAGE_HW_TEXTURE) &&
+				  handle->width >= 64))
+				*tiling = I915_TILING_X;
+			else
+				*tiling = I915_TILING_NONE;
 		}
 
 		if (handle->usage & GRALLOC_USAGE_HW_RENDER)
@@ -344,15 +401,28 @@ static struct gralloc_drm_bo_t *intel_alloc(struct gralloc_drm_drv_t *drv,
 	ib = calloc(1, sizeof(*ib));
 	if (!ib)
 		return NULL;
-
-	if (handle->name) {
+#ifdef USE_NAME
+        if (handle->name) {
+#else
+        if (handle->prime_fd >= 0) {
+#endif
 		uint32_t dummy;
+                uint32_t aligned_width, aligned_height;
 
-		ib->ibo = drm_intel_bo_gem_create_from_name(info->bufmgr,
-				"gralloc-r", handle->name);
+                aligned_width = handle->width;
+                aligned_height = handle->height;
+
+		calculate_aligned_geometry(handle->format, &aligned_width, &aligned_height);
+#ifdef USE_NAME
+                ib->ibo = drm_intel_bo_gem_create_from_name(info->bufmgr,
+                                "gralloc-r", handle->name)
+#else
+                ib->ibo = drm_intel_bo_gem_create_from_prime(info->bufmgr,
+				handle->prime_fd, 0);
+#endif
 		if (!ib->ibo) {
-			ALOGE("failed to create ibo from name %u",
-					handle->name);
+                        ALOGE("failed to create ibo from prime_fd %d",
+                                        handle->prime_fd);
 			free(ib);
 			return NULL;
 		}
@@ -377,13 +447,21 @@ static struct gralloc_drm_bo_t *intel_alloc(struct gralloc_drm_drv_t *drv,
 			return NULL;
 		}
 
-		handle->stride = stride;
+                handle->stride = stride;
+#ifdef USE_NAME
+                int r = drm_intel_bo_flink(ib->ibo, (uint32_t *) &handle->name));
+#else
 
-		if (drm_intel_bo_flink(ib->ibo, (uint32_t *) &handle->name)) {
-			ALOGE("failed to flink ibo");
-			drm_intel_bo_unreference(ib->ibo);
-			free(ib);
-			return NULL;
+                int r = drmPrimeHandleToFD(info->fd,
+                                           ib->ibo->handle,
+                                           DRM_CLOEXEC | DRM_RDWR,
+                                           &handle->prime_fd);
+#endif
+                if (r < 0) {
+                    ALOGE("cannot get prime-fd for handle");
+		    drm_intel_bo_unreference(ib->ibo);
+		    free(ib);
+		    return NULL;
 		}
 	}
 
