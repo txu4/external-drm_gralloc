@@ -43,17 +43,6 @@
 #include "gralloc_drm_priv.h"
 #include "util.h"
 
-#define MI_NOOP                     (0)
-#define MI_BATCH_BUFFER_END         (0x0a << 23)
-#define MI_FLUSH                    (0x04 << 23)
-#define MI_FLUSH_DW                 (0x26 << 23)
-#define MI_WRITE_DIRTY_STATE        (1 << 4) 
-#define MI_INVALIDATE_MAP_CACHE     (1 << 0)
-#define XY_SRC_COPY_BLT_CMD         ((2 << 29) | (0x53 << 22) | 6)
-#define XY_SRC_COPY_BLT_WRITE_ALPHA (1 << 21)
-#define XY_SRC_COPY_BLT_WRITE_RGB   (1 << 20)
-#define XY_SRC_COPY_BLT_SRC_TILED   (1 << 15)
-#define XY_SRC_COPY_BLT_DST_TILED   (1 << 11)
 #define DRM_CLOEXEC O_CLOEXEC
 #ifndef DRM_RDWR
 #define DRM_RDWR O_RDWR
@@ -65,11 +54,6 @@ struct intel_info {
 	int fd;
 	drm_intel_bufmgr *bufmgr;
 	int gen;
-
-	drm_intel_bo *batch_ibo;
-	uint32_t *batch, *cur;
-	int capacity, size;
-	int exec_blt;
 };
 
 struct intel_buffer {
@@ -77,127 +61,6 @@ struct intel_buffer {
 	drm_intel_bo *ibo;
 	uint32_t tiling;
 };
-
-static int
-batch_next(struct intel_info *info)
-{
-	info->cur = info->batch;
-
-	if (info->batch_ibo)
-		drm_intel_bo_unreference(info->batch_ibo);
-
-	info->batch_ibo = drm_intel_bo_alloc(info->bufmgr,
-			"gralloc-batchbuffer", info->size, 4096);
-
-	return (info->batch_ibo) ? 0 : -ENOMEM;
-}
-
-static int
-batch_count(struct intel_info *info)
-{
-	return info->cur - info->batch;
-}
-
-static void
-batch_dword(struct intel_info *info, uint32_t dword)
-{
-	*info->cur++ = dword;
-}
-
-static int
-batch_reloc(struct intel_info *info, struct gralloc_drm_bo_t *bo,
-		uint32_t read_domains, uint32_t write_domain)
-{
-	struct intel_buffer *target = (struct intel_buffer *) bo;
-	uint32_t offset = (info->cur - info->batch) * sizeof(info->batch[0]);
-	int ret;
-
-	ret = drm_intel_bo_emit_reloc(info->batch_ibo, offset,
-			target->ibo, 0, read_domains, write_domain);
-	if (!ret)
-		batch_dword(info, target->ibo->offset);
-
-	return ret;
-}
-
-static int
-batch_flush(struct intel_info *info)
-{
-	int size, ret;
-
-	batch_dword(info, MI_BATCH_BUFFER_END);
-	size = batch_count(info);
-	if (size & 1) {
-		batch_dword(info, MI_NOOP);
-		size = batch_count(info);
-	}
-
-	size *= sizeof(info->batch[0]);
-	ret = drm_intel_bo_subdata(info->batch_ibo, 0, size, info->batch);
-	if (ret) {
-		ALOGE("failed to subdata batch");
-		goto fail;
-	}
-	ret = drm_intel_bo_mrb_exec(info->batch_ibo, size,
-		NULL, 0, 0, info->exec_blt);
-	if (ret) {
-		ALOGE("failed to exec batch");
-		goto fail;
-	}
-
-	return batch_next(info);
-
-fail:
-	info->cur = info->batch;
-
-	return ret;
-}
-
-static int
-batch_reserve(struct intel_info *info, int count)
-{
-	int ret = 0;
-
-	if (batch_count(info) + count > info->capacity)
-		ret = batch_flush(info);
-
-	return ret;
-}
-
-static void
-batch_destroy(struct intel_info *info)
-{
-	if (info->batch_ibo) {
-		drm_intel_bo_unreference(info->batch_ibo);
-		info->batch_ibo = NULL;
-	}
-
-	if (info->batch) {
-		free(info->batch);
-		info->batch = NULL;
-	}
-}
-
-static int
-batch_init(struct intel_info *info)
-{
-	int ret;
-
-	info->capacity = 512;
-	info->size = (info->capacity + 16) * sizeof(info->batch[0]);
-
-	info->batch = malloc(info->size);
-	if (!info->batch)
-		return -ENOMEM;
-
-	ret = batch_next(info);
-	if (ret) {
-		free(info->batch);
-		info->batch = NULL;
-	}
-
-	return ret;
-}
 
 static void calculate_aligned_geometry(uint32_t hal_format, int usage,
 		uint32_t *width,
@@ -276,16 +139,6 @@ static void intel_resolve_format(struct gralloc_drm_drv_t *drv,
 				pitches[2] * ib->base.handle->height/2;
 
 			handles[1] = handles[2] = handles[0];
-			break;
-
-		case HAL_PIXEL_FORMAT_DRM_NV12:
-
-			// U and V are interleaved in 2nd plane
-			pitches[1] = pitches[0];
-			offsets[1] = offsets[0] +
-				pitches[0] * ib->base.handle->height;
-
-			handles[1] = handles[0];
 			break;
 	}
 }
@@ -407,12 +260,6 @@ static struct gralloc_drm_bo_t *intel_alloc(struct gralloc_drm_drv_t *drv,
         if (handle->prime_fd >= 0) {
 #endif
 		uint32_t dummy;
-                uint32_t aligned_width, aligned_height;
-
-                aligned_width = handle->width;
-                aligned_height = handle->height;
-
-		calculate_aligned_geometry(handle->format, &aligned_width, &aligned_height);
 #ifdef USE_NAME
                 ib->ibo = drm_intel_bo_gem_create_from_name(info->bufmgr,
                                 "gralloc-r", handle->name)
@@ -516,20 +363,13 @@ static void intel_unmap(struct gralloc_drm_drv_t *drv,
 static void gen_init(struct intel_info *info)
 {
 	struct drm_i915_getparam gp;
-	int pageflipping, id, has_blt;
+	int id;
 
 	memset(&gp, 0, sizeof(gp));
 	gp.param = I915_PARAM_CHIPSET_ID;
 	gp.value = &id;
 	if (drmCommandWriteRead(info->fd, DRM_I915_GETPARAM, &gp, sizeof(gp)))
 		id = 0;
-
-	memset(&gp, 0, sizeof(gp));
-	gp.param = I915_PARAM_HAS_BLT;
-	gp.value = &has_blt;
-	if (drmCommandWriteRead(info->fd, DRM_I915_GETPARAM, &gp, sizeof(gp)))
-		has_blt = 0;
-	info->exec_blt = has_blt ? I915_EXEC_BLT : 0;
 
 	/* GEN4, G4X, GEN5, GEN6, GEN7 */
 	if ((IS_9XX(id) || IS_G4X(id)) && !IS_GEN3(id)) {
@@ -551,7 +391,6 @@ static void intel_destroy(struct gralloc_drm_drv_t *drv)
 {
 	struct intel_info *info = (struct intel_info *) drv;
 
-	batch_destroy(info);
 	drm_intel_bufmgr_destroy(info->bufmgr);
 	free(info);
 }
@@ -574,7 +413,6 @@ struct gralloc_drm_drv_t *gralloc_drm_drv_create_for_intel(int fd)
 		return NULL;
 	}
 
-	batch_init(info);
 	gen_init(info);
 
 	info->base.destroy = intel_destroy;
