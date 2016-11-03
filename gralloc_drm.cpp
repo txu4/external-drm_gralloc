@@ -168,10 +168,8 @@ static struct gralloc_drm_bo_t *validate_handle(buffer_handle_t _handle,
 			return NULL;
 		/* create the struct gralloc_drm_bo_t locally */
 #ifdef USE_NAME
-		ALOGE("handle: name=%d \n", handle->name);
 		if (handle->name)
 #else
-		ALOGE("handle: pfd=%d\n", handle->prime_fd);
 		if (handle->prime_fd >= 0)
 #endif
 			bo = drm->drv->alloc(drm->drv, handle);
