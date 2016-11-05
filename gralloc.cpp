@@ -29,6 +29,7 @@
 #include <pthread.h>
 #include <errno.h>
 
+#include "drmhwcgralloc.h"
 #include "gralloc_drm.h"
 #include "gralloc_drm_priv.h"
 
@@ -66,6 +67,26 @@ static int drm_mod_perform(const struct gralloc_module_t *mod, int op, ...)
 		{
 			int *fd = va_arg(args, int *);
 			*fd = gralloc_drm_get_fd(dmod->drm);
+			err = 0;
+		}
+		break;
+	case static_cast<int>(GRALLOC_MODULE_PERFORM_GET_USAGE):
+		{
+			buffer_handle_t handle = va_arg(args, buffer_handle_t);
+			int *buffer_usage = va_arg(args, int *);
+			gralloc_drm_handle_t *gr_handle = gralloc_drm_handle(handle);
+
+			if (!gr_handle) {
+				ALOGE("could not find gralloc drm handle");
+				err = -EINVAL;
+				break;
+			}
+
+			if (gr_handle->usage & GRALLOC_USAGE_PROTECTED) {
+				*buffer_usage = 0;
+			} else {
+				*buffer_usage = gr_handle->usage;
+			}
 			err = 0;
 		}
 		break;
