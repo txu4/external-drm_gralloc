@@ -95,6 +95,8 @@ LOCAL_C_INCLUDES := \
 	external/libdrm \
 	external/libdrm/include/drm
 
+LOCAL_CFLAGS += -isystem external/drm_hwcomposer
+
 LOCAL_SHARED_LIBRARIES := \
 	libdrm \
 	liblog \
@@ -169,6 +171,8 @@ LOCAL_SRC_FILES := \
 LOCAL_C_INCLUDES := \
 	external/libdrm \
 	external/libdrm/include/drm
+
+LOCAL_CFLAGS += -isystem external/drm_hwcomposer
 
 LOCAL_SHARED_LIBRARIES := \
 	libgralloc_drm \

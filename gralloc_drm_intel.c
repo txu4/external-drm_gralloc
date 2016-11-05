@@ -54,6 +54,8 @@ struct intel_info {
 	int fd;
 	drm_intel_bufmgr *bufmgr;
 	int gen;
+	uint32_t cursor_width;
+	uint32_t cursor_height;
 };
 
 struct intel_buffer {
@@ -63,6 +65,8 @@ struct intel_buffer {
 };
 
 static void calculate_aligned_geometry(uint32_t hal_format, int usage,
+		uint32_t cursor_width,
+		uint32_t cursor_height,
 		uint32_t *width,
 		uint32_t *height)
 {
@@ -95,7 +99,10 @@ static void calculate_aligned_geometry(uint32_t hal_format, int usage,
 	if (extra_height_div)
 		*height += *height / extra_height_div;
 
-	if (usage & GRALLOC_USAGE_HW_FB) {
+	if (usage & GRALLOC_USAGE_CURSOR)  {
+		*width = ALIGN(*width, cursor_width);
+		*height = ALIGN(*height, cursor_height);
+	} else if (usage & GRALLOC_USAGE_HW_FB) {
 		*width = ALIGN(*width, 64);
 	} else if (usage & GRALLOC_USAGE_HW_TEXTURE) {
 		/* see 2D texture layout of DRI drivers */
@@ -107,9 +114,11 @@ static void calculate_aligned_geometry(uint32_t hal_format, int usage,
 		*width = ALIGN(*width, 128);
 }
 
-static void intel_resolve_format(struct gralloc_drm_drv_t *drv,
-		struct gralloc_drm_bo_t *bo,
-		uint32_t *pitches, uint32_t *offsets, uint32_t *handles)
+static void calculate_aligned_offsets(struct gralloc_drm_bo_t *bo,
+		uint32_t height,
+		uint32_t *pitches,
+		uint32_t *offsets,
+		uint32_t *handles)
 {
 	/*
 	 * TODO - should take account hw specific padding, alignment
@@ -129,18 +138,33 @@ static void intel_resolve_format(struct gralloc_drm_drv_t *drv,
 		case HAL_PIXEL_FORMAT_YV12:
 
 			// U and V stride are half of Y plane
-			pitches[2] = pitches[0]/2;
-			pitches[1] = pitches[0]/2;
+			pitches[2] = ALIGN(pitches[0] / 2, 16);
+			pitches[1] = ALIGN(pitches[0] / 2, 16);
 
 			// like I420 but U and V are in reverse order
 			offsets[2] = offsets[0] +
-				pitches[0] * ib->base.handle->height;
+				pitches[0] * height;
 			offsets[1] = offsets[2] +
-				pitches[2] * ib->base.handle->height/2;
+				pitches[2] * height/2;
 
 			handles[1] = handles[2] = handles[0];
 			break;
 	}
+}
+
+static void intel_resolve_format(struct gralloc_drm_drv_t *drv,
+		struct gralloc_drm_bo_t *bo,
+		uint32_t *pitches, uint32_t *offsets, uint32_t *handles)
+{
+    struct intel_info *info = (struct intel_info *) drv;
+    uint32_t aligned_width = bo->handle->width;
+    uint32_t aligned_height = bo->handle->height;
+    calculate_aligned_geometry(bo->handle->format, bo->handle->usage,
+			       info->cursor_width, info->cursor_height,
+			       &aligned_width, &aligned_height);
+
+    calculate_aligned_offsets(bo, aligned_height,
+			      pitches, offsets, handles);
 }
 
 static drm_intel_bo *alloc_ibo(struct intel_info *info,
@@ -161,9 +185,10 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 
 	aligned_width = handle->width;
 	aligned_height = handle->height;
-	calculate_aligned_geometry(handle->format, &aligned_width, &aligned_height);
-
-	if (handle->usage & GRALLOC_USAGE_HW_FB) {
+	calculate_aligned_geometry(handle->format, handle->usage,
+				   info->cursor_width, info->cursor_height,
+				   &aligned_width, &aligned_height);
+	if (handle->usage & GRALLOC_USAGE_HW_FB || handle->usage & GRALLOC_USAGE_CURSOR) {
 		unsigned long max_stride;
 
 		max_stride = 32 * 1024;
@@ -171,12 +196,15 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 			max_stride /= 2;
 		if (info->gen < 40)
 			max_stride /= 2;
+		if (handle->usage & GRALLOC_USAGE_CURSOR)  {
+		    *tiling = I915_TILING_NONE;
+		    name = "gralloc-cursor";
+		} else {
+		    name = "gralloc-fb";
+		    *tiling = I915_TILING_X;
+		}
 
-		name = "gralloc-fb";
-		aligned_width = ALIGN(aligned_width, 64);
 		flags = BO_ALLOC_FOR_RENDER;
-
-		*tiling = I915_TILING_X;
 		*stride = aligned_width * bpp;
 		if (*stride > max_stride) {
 			*tiling = I915_TILING_NONE;
@@ -210,9 +238,6 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 	else {
 		if (handle->usage & GRALLOC_USAGE_HW_TEXTURE) {
 			name = "gralloc-texture";
-			/* see 2D texture layout of DRI drivers */
-			aligned_width = ALIGN(aligned_width, 4);
-			aligned_height = ALIGN(aligned_height, 2);
 		}
 		else {
 			name = "gralloc-buffer";
@@ -220,7 +245,6 @@ static drm_intel_bo *alloc_ibo(struct intel_info *info,
 
 		if (get_fourcc_format_for_hal_format(handle->format) == DRM_FORMAT_YUV420) {
 			*tiling = I915_TILING_NONE;
-			aligned_width = ALIGN(aligned_width, 128);
 			name = "gralloc-videotexture";
 		} else {
 			if (handle->usage & (GRALLOC_USAGE_SW_READ_OFTEN |
@@ -385,6 +409,10 @@ static void gen_init(struct intel_info *info)
 	else {
 		info->gen = 30;
 	}
+
+	get_preferred_cursor_attributes(info->fd,
+					&info->cursor_width,
+					&info->cursor_height);
 }
 
 static void intel_destroy(struct gralloc_drm_drv_t *drv)
