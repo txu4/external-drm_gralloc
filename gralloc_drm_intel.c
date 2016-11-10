@@ -70,7 +70,7 @@ static void calculate_aligned_geometry(uint32_t hal_format, int usage,
 		uint32_t *width,
 		uint32_t *height)
 {
-	uint32_t width_alignment = 1, height_alignment = 1, extra_height_div =1;
+	uint32_t width_alignment = 1, height_alignment = 1, extra_height_div = 0;
 	uint32_t fourcc_format = get_fourcc_format_for_hal_format(hal_format);
 	switch(fourcc_format) {
 	case DRM_FORMAT_YUV420:
