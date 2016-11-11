@@ -233,6 +233,13 @@ static int drm_mod_alloc_gpu0(alloc_device_t *dev,
 	return 0;
 }
 
+static void drm_mod_dump_gpu0(struct alloc_device_t *dev, char *buff, int buff_len)
+{
+	ALOGD("alloc_device_t dump not implemented yet");
+	return;
+}
+
+
 static int drm_mod_open_gpu0(struct drm_module_t *dmod, hw_device_t **dev)
 {
 	struct alloc_device_t *alloc;
@@ -253,6 +260,7 @@ static int drm_mod_open_gpu0(struct drm_module_t *dmod, hw_device_t **dev)
 
 	alloc->alloc = drm_mod_alloc_gpu0;
 	alloc->free = drm_mod_free_gpu0;
+	alloc->dump = drm_mod_dump_gpu0;
 
 	*dev = &alloc->common;
 
